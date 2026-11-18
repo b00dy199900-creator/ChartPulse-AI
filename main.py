@@ -4,9 +4,9 @@ import os
 from fastapi import FastAPI, Header, HTTPException
 
 app = FastAPI(
-    title="ChartPulse AI",
-    description="PulseTrade AI Cloud API",
-    version="1.0.0"
+ title="ChartPulse AI",
+ description="PulseTrade AI Cloud API",
+ version="1.0.0"
 )
 
 API_TOKEN = os.getenv("PULSE_API_TOKEN")
