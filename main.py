@@ -7,15 +7,20 @@ from typing import Any
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
-app = FastAPI(title="ChartPulse AI", description="PulseTrade AI Cloud API", version="1.1.0")
+app = FastAPI(
+    title="ChartPulse AI",
+    description="PulseTrade AI Cloud API",
+    version="1.1.0",
+)
+
 API_TOKEN = os.getenv("PULSE_API_TOKEN", "")
 SUPPORTED_TIMEFRAMES = {"M15": 900}
 
 
 class CandlePayload(BaseModel):
- model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid")
 
- symbol: str = Field(min_length=1, max_length=20)
+    symbol: str = Field(min_length=1, max_length=20)
     timeframe: str
     timestamp: StrictInt
     open: float
@@ -27,7 +32,7 @@ class CandlePayload(BaseModel):
     @field_validator("symbol")
     @classmethod
     def validate_symbol(cls, value: str) -> str:
- value = value.strip()
+        value = value.strip()
         if not value or len(value) > 20:
             raise ValueError("symbol must contain 1 to 20 non-whitespace characters")
         return value
@@ -44,10 +49,10 @@ class CandlePayload(BaseModel):
     def validate_finite_number(cls, value: Any) -> float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError("must be a JSON number")
- umber = float(value)
-        if not math.isfinite( umber):
+        number = float(value)
+        if not math.isfinite(number):
             raise ValueError("must be finite; NaN and Infinity are not accepted")
-        return umber
+        return number
 
 
 def authenticate(authorization: str) -> bool:
@@ -58,12 +63,20 @@ def authenticate(authorization: str) -> bool:
 
 @app.get("/")
 def home():
-    return {"service": "ChartPulse AI", "status": "online", "trading_execution": "disabled"}
+    return {
+        "service": "ChartPulse AI",
+        "status": "online",
+        "trading_execution": "disabled",
+    }
 
 
 @app.get("/health")
 def health():
-    return {"status": "healthy", "bot_started": False, "platform_connection": False}
+    return {
+        "status": "healthy",
+        "bot_started": False,
+        "platform_connection": False,
+    }
 
 
 @app.get("/status")
@@ -72,37 +85,51 @@ def status(authorization: str = Header(default="")):
         raise HTTPException(status_code=503, detail="API token is not configured")
     if not authenticate(authorization):
         raise HTTPException(status_code=401, detail="Unauthorized")
-    return {"service": "ChartPulse AI", "status": "ready", "trading_execution": "disabled"}
+    return {
+        "service": "ChartPulse AI",
+        "status": "ready",
+        "trading_execution": "disabled",
+    }
 
 
 @app.post("/api/v1/market-data/candle")
 def submit_candle(payload: CandlePayload, authorization: str = Header(default="")):
     if not authenticate(authorization):
-        raise HTTPException(status_code=401, detail="Unauthorized: invalid or missing Bearer token")
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: invalid or missing Bearer token",
+        )
 
- interval = SUPPORTED_TIMEFRAMES[payload.timeframe]
- ow = int(time.time())
- ts = payload.timestamp
+    interval = SUPPORTED_TIMEFRAMES[payload.timeframe]
+    now = int(time.time())
+    ts = payload.timestamp
 
-    if ts &lt;= 0:
+    if ts <= 0:
         raise HTTPException(status_code=400, detail="timestamp must be a positive Unix timestamp")
-    if ts &gt; now:
+    if ts > now:
         raise HTTPException(status_code=400, detail="timestamp cannot be in the future")
-    if ow - ts &gt; 86400:
+    if now - ts > 86400:
         raise HTTPException(status_code=400, detail="timestamp must be within the last 24 hours")
     if ts % interval != 0:
         raise HTTPException(status_code=400, detail="timestamp must align to an M15 candle boundary")
-    if ts + interval &gt; now:
+    if ts + interval > now:
         raise HTTPException(status_code=400, detail="candle is not complete")
 
- o, h, low, c, v = payload.open, payload.high, payload.low, payload.close, payload.volume
-    if h &lt; max(o, c):
+    o, h, low, c, v = (
+        payload.open,
+        payload.high,
+        payload.low,
+        payload.close,
+        payload.volume,
+    )
+
+    if h < max(o, c):
         raise HTTPException(status_code=400, detail="high must be >= open and close")
-    if low &gt; min(o, c):
-        raise HTTPException(status_code=400, detail="low must be &lt;= open and close")
-    if h &lt; low:
+    if low > min(o, c):
+        raise HTTPException(status_code=400, detail="low must be <= open and close")
+    if h < low:
         raise HTTPException(status_code=400, detail="high must be >= low")
-    if v &lt; 0:
+    if v < 0:
         raise HTTPException(status_code=400, detail="volume must be non-negative")
 
     return {
