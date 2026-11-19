@@ -1,15 +1,80 @@
-
-
+import hmac
+import math
 import os
+import time
+from typing import Any
+
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 app = FastAPI(
     title="ChartPulse AI",
     description="PulseTrade AI Cloud API",
-    version="1.0.0"
+    version="1.1.0",
 )
 
-API_TOKEN = os.getenv("PULSE_API_TOKEN")
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    safe_errors = [
+        {
+            "loc": list(error.get("loc", ())),
+            "msg": error.get("msg", "Invalid request"),
+            "type": error.get("type", "value_error"),
+        }
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
+
+
+API_TOKEN = os.getenv("PULSE_API_TOKEN", "")
+SUPPORTED_TIMEFRAMES = {"M15": 900}
+
+
+class CandlePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=20)
+    timeframe: str
+    timestamp: StrictInt
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 20:
+            raise ValueError("symbol must contain 1 to 20 non-whitespace characters")
+        return value
+
+    @field_validator("timeframe")
+    @classmethod
+    def validate_timeframe(cls, value: str) -> str:
+        if value not in SUPPORTED_TIMEFRAMES:
+            raise ValueError("only M15 timeframe is currently supported")
+        return value
+
+    @field_validator("open", "high", "low", "close", "volume", mode="before")
+    @classmethod
+    def validate_finite_number(cls, value: Any) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("must be a JSON number")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("must be finite; NaN and Infinity are not accepted")
+        return number
+
+
+def authenticate(authorization: str) -> bool:
+    if not API_TOKEN or not authorization.startswith("Bearer "):
+        return False
+    return hmac.compare_digest(authorization[7:], API_TOKEN)
 
 
 @app.get("/")
@@ -17,7 +82,7 @@ def home():
     return {
         "service": "ChartPulse AI",
         "status": "online",
-        "trading_execution": "disabled"
+        "trading_execution": "disabled",
     }
 
 
@@ -26,26 +91,71 @@ def health():
     return {
         "status": "healthy",
         "bot_started": False,
-        "platform_connection": False
+        "platform_connection": False,
     }
 
 
 @app.get("/status")
 def status(authorization: str = Header(default="")):
     if not API_TOKEN:
-        raise HTTPException(
-            status_code=503,
-            detail="API token is not configured"
-        )
-
-    if authorization != f"Bearer {API_TOKEN}":
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized"
-        )
-
+        raise HTTPException(status_code=503, detail="API token is not configured")
+    if not authenticate(authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     return {
         "service": "ChartPulse AI",
         "status": "ready",
-        "trading_execution": "disabled"
+        "trading_execution": "disabled",
+    }
+
+
+@app.post("/api/v1/market-data/candle")
+def submit_candle(payload: CandlePayload, authorization: str = Header(default="")):
+    if not authenticate(authorization):
+        raise HTTPException(
+            status_code=401,
+            detail="Unauthorized: invalid or missing Bearer token",
+        )
+
+    interval = SUPPORTED_TIMEFRAMES[payload.timeframe]
+    now = int(time.time())
+    ts = payload.timestamp
+
+    if ts <= 0:
+        raise HTTPException(status_code=400, detail="timestamp must be a positive Unix timestamp")
+    if ts > now:
+        raise HTTPException(status_code=400, detail="timestamp cannot be in the future")
+    if now - ts > 86400:
+        raise HTTPException(status_code=400, detail="timestamp must be within the last 24 hours")
+    if ts % interval != 0:
+        raise HTTPException(status_code=400, detail="timestamp must align to an M15 candle boundary")
+    if ts + interval > now:
+        raise HTTPException(status_code=400, detail="candle is not complete")
+
+    o, h, low, c, v = (
+        payload.open,
+        payload.high,
+        payload.low,
+        payload.close,
+        payload.volume,
+    )
+
+    if h < max(o, c):
+        raise HTTPException(status_code=400, detail="high must be >= open and close")
+    if low > min(o, c):
+        raise HTTPException(status_code=400, detail="low must be <= open and close")
+    if h < low:
+        raise HTTPException(status_code=400, detail="high must be >= low")
+    if v < 0:
+        raise HTTPException(status_code=400, detail="volume must be non-negative")
+
+    return {
+        "service": "ChartPulse AI",
+        "candle_validated": True,
+        "symbol": payload.symbol,
+        "timeframe": payload.timeframe,
+        "timeframe_seconds": interval,
+        "timestamp": ts,
+        "ohlc": {"open": o, "high": h, "low": low, "close": c},
+        "volume": v,
+        "note": "Validation only - no trading signals, no order placement, no execution.",
     }
