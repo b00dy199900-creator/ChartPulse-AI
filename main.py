@@ -114,5 +114,5 @@ def submit_candle(payload: CandlePayload, authorization: str = Header(default=""
         "timestamp": ts,
         "ohlc": {"open": o, "high": h, "low": low, "close": c},
         "volume": v,
-        "note": "Validation only — no trading signals, no order placement, no execution.",
+        "note": "Validation only - no trading signals, no order placement, no execution.",
     }
