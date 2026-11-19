@@ -5,6 +5,8 @@ import time
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
 app = FastAPI(
@@ -12,6 +14,20 @@ app = FastAPI(
     description="PulseTrade AI Cloud API",
     version="1.1.0",
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request, exc):
+    safe_errors = [
+        {
+            "loc": list(error.get("loc", ())),
+            "msg": error.get("msg", "Invalid request"),
+            "type": error.get("type", "value_error"),
+        }
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
+
 
 API_TOKEN = os.getenv("PULSE_API_TOKEN", "")
 SUPPORTED_TIMEFRAMES = {"M15": 900}
