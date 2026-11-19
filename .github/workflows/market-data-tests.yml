@@ -1,0 +1,124 @@
+name: Market Data API Tests
+
+on:
+  push:
+    branches:
+      - feature/market-data-api
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PULSE_API_TOKEN: ci-test-token
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install fastapi uvicorn httpx pytest
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+      - name: Generate and run tests
+        run: |
+          cat << 'EOF' > /tmp/test_market_data.py
+          import time
+          import pytest
+          from fastapi.testclient import TestClient
+          from unittest.mock import patch
+          import sys
+          import os
+
+          sys.path.append(os.getcwd())
+          from main import app
+
+          client = TestClient(app)
+          TOKEN = "ci-test-token"
+          HEADERS = {"Authorization": f"Bearer {TOKEN}"}
+
+          def test_imports():
+              assert app is not None
+
+          def test_health():
+              response = client.get("/health")
+              assert response.status_code == 200
+              data = response.json()
+              assert data["status"] == "healthy"
+              assert data["bot_started"] is False
+              assert data["platform_connection"] is False
+
+          def test_root():
+              response = client.get("/")
+              assert response.status_code == 200
+              assert response.json()["trading_execution"] == "disabled"
+
+          def test_status_auth():
+              assert client.get("/status").status_code == 401
+              assert client.get("/status", headers={"Authorization": "Bearer wrong"}).status_code == 401
+              response = client.get("/status", headers=HEADERS)
+              assert response.status_code == 200
+              assert "ready" in str(response.json()).lower() or "ready" in response.text.lower()
+
+          def test_candle_valid():
+              now = int(time.time())
+              aligned = (now // 900) * 900
+              timestamp = aligned - 900
+              payload = {
+                  "symbol": "BTC/USDT",
+                  "timestamp": timestamp,
+                  "timeframe": "M15",
+                  "open": 100.0,
+                  "high": 110.0,
+                  "low": 90.0,
+                  "close": 105.0,
+                  "volume": 10.0
+              }
+              response = client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS)
+              assert response.status_code == 200
+              assert response.json()["candle_validated"] is True
+
+          def test_candle_auth():
+              payload = {"symbol": "BTC/USDT", "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M15", "open": 100, "high": 110, "low": 90, "close": 105, "volume": 10}
+              assert client.post("/api/v1/market-data/candle", json=payload).status_code == 401
+              assert client.post("/api/v1/market-data/candle", json=payload, headers={"Authorization": "Bearer bad"}).status_code == 401
+
+          def test_candle_invalid_timeframe():
+              payload = {"symbol": "BTC/USDT", "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M5", "open": 100, "high": 110, "low": 90, "close": 105, "volume": 10}
+              assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 422
+
+          def test_candle_extra_field():
+              payload = {"symbol": "BTC/USDT", "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M15", "open": 100, "high": 110, "low": 90, "close": 105, "volume": 10, "extra": "field"}
+              assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 422
+
+          @pytest.mark.parametrize("h,l,o,c", [
+              (100, 90, 105, 95), (100, 90, 95, 105), (110, 105, 100, 100), (110, 105, 110, 100), (90, 100, 95, 95)
+          ])
+          def test_candle_invalid_ohlc(h, l, o, c):
+              payload = {"symbol": "BTC/USDT", "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M15", "open": float(o), "high": float(h), "low": float(l), "close": float(c), "volume": 10.0}
+              assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 400
+
+          def test_candle_negative_volume():
+              payload = {"symbol": "BTC/USDT", "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M15", "open": 100, "high": 110, "low": 90, "close": 105, "volume": -1}
+              assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 400
+
+          @pytest.mark.parametrize("field, val", [
+              ("open", float("nan")), ("high", float("inf")), ("low", True), ("volume", "nan")
+          ])
+          def test_candle_numeric_types(field, val):
+              payload = {"symbol": "BTC/USDT", "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M15", "open": 100.0, "high": 110.0, "low": 90.0, "close": 105.0, "volume": 10.0}
+              payload[field] = val
+              assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 422
+
+          def test_candle_timestamps():
+              now = int(time.time())
+              aligned = (now // 900) * 900
+              base = {"symbol": "BTC/USDT", "timeframe": "M15", "open": 100, "high": 110, "low": 90, "close": 105, "volume": 10}
+              assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned + 900}, headers=HEADERS).status_code == 400
+              assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned - 90000}, headers=HEADERS).status_code == 400
+              assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned - 100}, headers=HEADERS).status_code == 400
+              with patch("main.time.time", return_value=aligned + 600):
+                  assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned}, headers=HEADERS).status_code == 400
+          EOF
+          pytest /tmp/test_market_data.py -v
