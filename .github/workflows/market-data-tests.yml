@@ -3,6 +3,7 @@ name: Market Data API Tests
 on:
   push:
     branches:
+      - main
       - feature/market-data-api
   workflow_dispatch:
 
