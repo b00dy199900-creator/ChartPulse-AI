@@ -101,6 +101,19 @@ jobs:
               payload = {"symbol": "BTC/USDT", "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M15", "open": float(o), "high": float(h), "low": float(l), "close": float(c), "volume": 10.0}
               assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 400
 
+          @pytest.mark.parametrize("o,h,l,c", [
+              (100, 110, 90, 100),
+              (100, 110, 90, 110),
+              (100, 100, 90, 95),
+              (100, 105, 100, 100),
+              (100, 100, 100, 100)
+          ])
+          def test_candle_valid_ohlc_boundaries(o, h, l, c):
+              payload = {"symbol": "BTC/USDT", "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M15", "open": float(o), "high": float(h), "low": float(l), "close": float(c), "volume": 10.0}
+              response = client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS)
+              assert response.status_code == 200
+              assert response.json()["candle_validated"] is True
+
           def test_candle_negative_volume():
               payload = {"symbol": "BTC/USDT", "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M15", "open": 100, "high": 110, "low": 90, "close": 105, "volume": -1}
               assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 400
