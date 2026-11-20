@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# SQLite databases
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Backup files
+*.bak*

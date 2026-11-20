@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PULSE_API_TOKEN: ci-test-token
+      CHARTPULSE_DB_PATH: /tmp/chartpulse-ci.db
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.12
@@ -146,7 +147,7 @@ jobs:
               aligned = (now // 900) * 900
               base = {"symbol": "BTC/USDT", "timeframe": "M15", "open": 100, "high": 110, "low": 90, "close": 105, "volume": 10}
               assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned + 900}, headers=HEADERS).status_code == 400
-              assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned - 90000}, headers=HEADERS).status_code == 400
+              assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned - 8 * 86400}, headers=HEADERS).status_code == 400
               assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned - 100}, headers=HEADERS).status_code == 400
               with patch("main.time.time", return_value=aligned + 600):
                   assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned}, headers=HEADERS).status_code == 400

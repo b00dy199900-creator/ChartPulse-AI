@@ -3,6 +3,7 @@ import math
 import os
 import time
 from typing import Any
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -29,8 +30,22 @@ async def validation_exception_handler(request, exc):
     return JSONResponse(status_code=422, content={"detail": safe_errors})
 
 
+from storage import DEFAULT_DB_PATH, initialize_database, register_data_source
+from ingestion import ingest_candles
+from analysis_engine import analyze_market
+
 API_TOKEN = os.getenv("PULSE_API_TOKEN", "")
+DB_PATH = Path(os.getenv("CHARTPULSE_DB_PATH", str(DEFAULT_DB_PATH)))
+DATA_SOURCE_NAME = os.getenv(
+    "CHARTPULSE_DATA_SOURCE", "market_data_provider"
+).strip() or "market_data_provider"
+MAX_CANDLE_AGE_SECONDS = 7 * 86400
 SUPPORTED_TIMEFRAMES = {"M15": 900}
+
+
+def ensure_data_source():
+    initialize_database(DB_PATH)
+    return register_data_source(DATA_SOURCE_NAME, db_path=DB_PATH)
 
 
 class CandlePayload(BaseModel):
@@ -43,7 +58,7 @@ class CandlePayload(BaseModel):
     high: float
     low: float
     close: float
-    volume: float
+    volume: float | None = None
 
     @field_validator("symbol")
     @classmethod
@@ -60,11 +75,23 @@ class CandlePayload(BaseModel):
             raise ValueError("only M15 timeframe is currently supported")
         return value
 
-    @field_validator("open", "high", "low", "close", "volume", mode="before")
+    @field_validator("open", "high", "low", "close", mode="before")
     @classmethod
     def validate_finite_number(cls, value: Any) -> float:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError("must be a JSON number")
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("must be finite; NaN and Infinity are not accepted")
+        return number
+
+    @field_validator("volume", mode="before")
+    @classmethod
+    def validate_optional_volume(cls, value: Any) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("must be a JSON number or null")
         number = float(value)
         if not math.isfinite(number):
             raise ValueError("must be finite; NaN and Infinity are not accepted")
@@ -108,35 +135,55 @@ def status(authorization: str = Header(default="")):
     }
 
 
+
+class AnalysisRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str = Field(min_length=1, max_length=20)
+    timeframe: str = "M15"
+    limit: StrictInt = Field(default=100, ge=100, le=500)
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_analysis_symbol(cls, value: str) -> str:
+        value = value.strip()
+        if not value or len(value) > 20:
+            raise ValueError("symbol must contain 1 to 20 non-whitespace characters")
+        return value
+
+    @field_validator("timeframe")
+    @classmethod
+    def validate_analysis_timeframe(cls, value: str) -> str:
+        if value not in SUPPORTED_TIMEFRAMES:
+            raise ValueError("only M15 timeframe is currently supported")
+        return value
+
+
 @app.post("/api/v1/market-data/candle")
-def submit_candle(payload: CandlePayload, authorization: str = Header(default="")):
+def submit_candle(
+    payload: CandlePayload,
+    authorization: str = Header(default="")
+):
     if not authenticate(authorization):
-        raise HTTPException(
-            status_code=401,
-            detail="Unauthorized: invalid or missing Bearer token",
-        )
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
     interval = SUPPORTED_TIMEFRAMES[payload.timeframe]
     now = int(time.time())
     ts = payload.timestamp
 
     if ts <= 0:
-        raise HTTPException(status_code=400, detail="timestamp must be a positive Unix timestamp")
+        raise HTTPException(status_code=400, detail="timestamp must be positive")
     if ts > now:
         raise HTTPException(status_code=400, detail="timestamp cannot be in the future")
-    if now - ts > 86400:
-        raise HTTPException(status_code=400, detail="timestamp must be within the last 24 hours")
-    if ts % interval != 0:
+    if now - ts > MAX_CANDLE_AGE_SECONDS:
+        raise HTTPException(status_code=400, detail="timestamp must be within the last 7 days")
+    if ts % interval:
         raise HTTPException(status_code=400, detail="timestamp must align to an M15 candle boundary")
     if ts + interval > now:
         raise HTTPException(status_code=400, detail="candle is not complete")
 
     o, h, low, c, v = (
-        payload.open,
-        payload.high,
-        payload.low,
-        payload.close,
-        payload.volume,
+        payload.open, payload.high, payload.low, payload.close, payload.volume
     )
 
     if h < max(o, c):
@@ -145,17 +192,75 @@ def submit_candle(payload: CandlePayload, authorization: str = Header(default=""
         raise HTTPException(status_code=400, detail="low must be <= open and close")
     if h < low:
         raise HTTPException(status_code=400, detail="high must be >= low")
-    if v < 0:
+    if v is not None and v < 0:
         raise HTTPException(status_code=400, detail="volume must be non-negative")
+
+    source_id = ensure_data_source()
+    candle = {
+        "symbol": payload.symbol,
+        "timeframe": payload.timeframe,
+        "timestamp": ts,
+        "open": o,
+        "high": h,
+        "low": low,
+        "close": c,
+        "volume": v,
+    }
+
+    try:
+        stored = ingest_candles(
+            source_id, [candle], now=now, db_path=DB_PATH
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return {
         "service": "ChartPulse AI",
         "candle_validated": True,
+        "candle_stored": True,
+        "source_name": DATA_SOURCE_NAME,
+        "source_id": source_id,
         "symbol": payload.symbol,
         "timeframe": payload.timeframe,
         "timeframe_seconds": interval,
         "timestamp": ts,
         "ohlc": {"open": o, "high": h, "low": low, "close": c},
         "volume": v,
-        "note": "Validation only - no trading signals, no order placement, no execution.",
+        "storage": stored,
+        "trading_execution": "disabled",
     }
+
+
+@app.post("/api/v1/market-data/analyze")
+def analyze_market_endpoint(
+    payload: AnalysisRequest,
+    authorization: str = Header(default="")
+):
+    if not authenticate(authorization):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    source_id = ensure_data_source()
+
+    try:
+        result = analyze_market(
+            source_id=source_id,
+            symbol=payload.symbol,
+            timeframe=payload.timeframe,
+            limit=payload.limit,
+            db_path=DB_PATH,
+        )
+        return {
+            "service": "ChartPulse AI",
+            "source_name": DATA_SOURCE_NAME,
+            "analysis": result,
+            "trading_execution": "disabled",
+        }
+    except ValueError as exc:
+        return {
+            "service": "ChartPulse AI",
+            "status": "blocked",
+            "eligible": False,
+            "reason": str(exc),
+            "source_name": DATA_SOURCE_NAME,
+            "trading_execution": "disabled",
+        }
