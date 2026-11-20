@@ -12,3 +12,13 @@ data/
 
 # Backup files
 *.bak*
+
+# Expert Option private credentials
+.env
+.env.*
+!.env.example
+expert_session.json
+
+# Local patch and phase helper files
+expert_option/*.before_utc_fix
+phase7_apply.py

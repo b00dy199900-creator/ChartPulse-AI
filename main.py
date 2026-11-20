@@ -10,6 +10,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 
+from expert_option.provider import ExpertOptionProvider
+
 app = FastAPI(
     title="ChartPulse AI",
     description="PulseTrade AI Cloud API",
@@ -264,3 +266,17 @@ def analyze_market_endpoint(
             "source_name": DATA_SOURCE_NAME,
             "trading_execution": "disabled",
         }
+
+
+@app.on_event("startup")
+async def initialize_expert_option():
+    app.state.expert_option_provider = ExpertOptionProvider()
+    app.state.expert_option_enabled = False
+
+
+@app.on_event("shutdown")
+async def shutdown_expert_option():
+    provider = getattr(app.state, "expert_option_provider", None)
+    if provider is not None:
+        await provider.disconnect()
+        app.state.expert_option_provider = None
