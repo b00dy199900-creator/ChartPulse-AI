@@ -151,4 +151,4 @@ jobs:
               with patch("main.time.time", return_value=aligned + 600):
                   assert client.post("/api/v1/market-data/candle", json={**base, "timestamp": aligned}, headers=HEADERS).status_code == 400
           EOF
-          pytest /tmp/test_market_data.py -v
+          pytest /tmp/test_market_data.py tests/ -v
