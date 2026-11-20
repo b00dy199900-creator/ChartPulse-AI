@@ -113,6 +113,21 @@ jobs:
               payload[field] = val
               assert client.post("/api/v1/market-data/candle", content=json.dumps(payload, allow_nan=True), headers={**HEADERS, "Content-Type": "application/json"}).status_code == 422
 
+          @pytest.mark.parametrize("symbol", ["", "   ", "A" * 21])
+          def test_candle_invalid_symbol(symbol):
+              payload = {"symbol": symbol, "timestamp": int(time.time()//900)*900 - 900, "timeframe": "M15", "open": 100, "high": 110, "low": 90, "close": 105, "volume": 10}
+              assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 422
+
+          @pytest.mark.parametrize("timestamp", ["1234567890", 1234567890.5, True])
+          def test_candle_invalid_timestamp_type(timestamp):
+              payload = {"symbol": "BTC/USDT", "timestamp": timestamp, "timeframe": "M15", "open": 100, "high": 110, "low": 90, "close": 105, "volume": 10}
+              assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 422
+
+          @pytest.mark.parametrize("timestamp", [0, -1])
+          def test_candle_nonpositive_timestamp(timestamp):
+              payload = {"symbol": "BTC/USDT", "timestamp": timestamp, "timeframe": "M15", "open": 100, "high": 110, "low": 90, "close": 105, "volume": 10}
+              assert client.post("/api/v1/market-data/candle", json=payload, headers=HEADERS).status_code == 400
+
           def test_candle_timestamps():
               now = int(time.time())
               aligned = (now // 900) * 900
